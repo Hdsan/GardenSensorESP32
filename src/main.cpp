@@ -8,7 +8,6 @@
 #include "DHTesp.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
-
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
@@ -48,29 +47,29 @@ void verifyPlantingBedId()
 {
     preferences.begin("garden-monitor", false);
     plantingBedId = preferences.getString("plantingBedId", "");
-    if(plantingBedId == ""){
-            Serial.println("Nenhum UUID registrado, chamando API...");
-            if (WiFi.status() == WL_CONNECTED)
+    if (plantingBedId == "")
+    {
+        Serial.println("Nenhum UUID registrado, chamando API...");
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            HTTPClient http;
+            http.begin(String(serverUrl) + "/register");
+            http.addHeader("Content-Type", "application/json");
+            int httpCode = http.POST("{}");
+            Serial.println(httpCode);
+            if (httpCode == 200)
             {
-                HTTPClient http;
-                http.begin(String(serverUrl) + "/register");
-                http.addHeader("Content-Type", "application/json");
-                int httpCode = http.POST("{}");
-                Serial.println(httpCode);
-                if (httpCode == 200)
-                {
-                    String payload = http.getString();
-                    DynamicJsonDocument doc(1024);
-                    deserializeJson(doc, payload);
-                    String plantingBedId = doc["esp32"]["id"];
-                    preferences.putString("plantingBedId", plantingBedId);
-                }
-                else
-                {
-                    Serial.println("Falha na chamada HTTP: " + String(httpCode));
-                }
-                http.end();
-            
+                String payload = http.getString();
+                DynamicJsonDocument doc(1024);
+                deserializeJson(doc, payload);
+                String plantingBedId = doc["esp32"]["id"];
+                preferences.putString("plantingBedId", plantingBedId);
+            }
+            else
+            {
+                Serial.println("Falha na chamada HTTP: " + String(httpCode));
+            }
+            http.end();
         }
     }
     preferences.end();
@@ -211,7 +210,7 @@ bool tryConnectWiFi()
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("\nWiFi conectado!");
-            BLEDevice::stopAdvertising();
+            //BLEDevice::stopAdvertising();
             return true;
         }
         attempts++;
@@ -232,15 +231,15 @@ void enviarSensorSalinidade()
     if (tryConnectWiFi())
     {
         HTTPClient http;
-        http.begin(serverUrl);
+        http.begin(String(serverUrl) + "irrigation-salinity"); // <-- URL completa
         http.addHeader("Content-Type", "application/json");
 
         String jsonData = "{";
         jsonData += "\"plantingBedId\":\"" + plantingBedId + "\"";
-        jsonData += ",\"salinity\":" + String(tensao); // TODO: recebe em tensão, converter sal-> backend?
+        jsonData += ",\"salinity\":" + String(tensao);
         jsonData += "}";
 
-        int httpResponseCode = http.POST(String(serverUrl) + "/irrigation-salinity" + jsonData);
+        int httpResponseCode = http.POST(jsonData);
         Serial.printf("plantingBedId: %s\n", plantingBedId.c_str());
         if (httpResponseCode == 200)
         {
@@ -248,7 +247,7 @@ void enviarSensorSalinidade()
     }
 }
 
-int enviarDados()
+void enviarDados()
 {
 
     delay(10000); // espera estabilizar os sensores
@@ -301,12 +300,14 @@ int enviarDados()
                 delay(15000); // TODO: rega dinâmica, input do usuário
                 Serial.println("coletando salinidade ...");
                 enviarSensorSalinidade();
-                delay(15000); 
+                delay(15000);
                 digitalWrite(RELAY, LOW);
-                return 300000; // 5 minutos para próxima leitura
+                // return 300000; // 5 minutos para próxima leitura
             }
-            else{
-                return 1800000; // 30 minutos para próxima leitura
+            else
+            {
+                Serial.println("irrigação não autorizada");
+                // return 1800000; // 30 minutos para próxima leitura
             }
         }
         else
@@ -339,7 +340,7 @@ void setup()
 
 void loop()
 {
-    int delayTime = enviarDados();
+    enviarDados();
     Serial.println("dados enviados");
-    delay(delayTime); //espera dinâmica
+    delay(1800000); //
 }
