@@ -1,17 +1,8 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLE2902.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "DHTesp.h"
-#include <Preferences.h>
 #include <ArduinoJson.h>
-#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-
-Preferences preferences;
 
 // WIFI
 
@@ -29,8 +20,6 @@ IPAddress secondaryDNS(8, 8, 4, 4);     // DNS opcional
 
 // Variaveis globais
 String plantingBedId = "5d30626c-6855-4462-8b8a-f9226b19e70f";
-BLECharacteristic *pCharacteristic;
-bool BLEdeviceConnected = false;
 
 // SENSORES
 const int sensor1 = 32; // HL-69 nº1
@@ -40,161 +29,10 @@ const int sensor4 = 35; // HL-69 nº4
 const int DHTPIN = 4;   // DHT11
 const int irrigationSalinityPin = 26;
 
-const int RELAY = 5;
+const int WaterRELAY = 5;
+const int Hl69RELAY = 16;
 
 DHTesp dht;
-void verifyPlantingBedId()
-{
-    preferences.begin("garden-monitor", false);
-    plantingBedId = preferences.getString("plantingBedId", "");
-    if (plantingBedId == "")
-    {
-        Serial.println("Nenhum UUID registrado, chamando API...");
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            HTTPClient http;
-            http.begin(String(serverUrl) + "/register");
-            http.addHeader("Content-Type", "application/json");
-            int httpCode = http.POST("{}");
-            Serial.println(httpCode);
-            if (httpCode == 200)
-            {
-                String payload = http.getString();
-                DynamicJsonDocument doc(1024);
-                deserializeJson(doc, payload);
-                String plantingBedId = doc["esp32"]["id"];
-                preferences.putString("plantingBedId", plantingBedId);
-            }
-            else
-            {
-                Serial.println("Falha na chamada HTTP: " + String(httpCode));
-            }
-            http.end();
-        }
-    }
-    preferences.end();
-}
-void sendWifiListToApp()
-{
-    Serial.println("📡 Escaneando redes Wi-Fi...");
-
-    int n = WiFi.scanNetworks();
-    if (n == 0)
-    {
-        Serial.println("Nenhuma rede encontrada.");
-        pCharacteristic->setValue("");
-        pCharacteristic->notify();
-        return;
-    }
-
-    String wifiList = "";
-    for (int i = 0; i < n; ++i)
-    {
-        wifiList += WiFi.SSID(i);
-        if (i < n - 1)
-            wifiList += ";";
-    }
-
-    Serial.print("Redes encontradas: ");
-    Serial.println(wifiList);
-
-    pCharacteristic->setValue(wifiList.c_str());
-    pCharacteristic->notify();
-}
-class NotificationCallbacks : public BLECharacteristicCallbacks
-{
-    void onWrite(BLECharacteristic *pCharacteristic) override
-    {
-        std::string message = pCharacteristic->getValue();
-
-        if (message == "CONN")
-        {
-            sendWifiListToApp();
-            Serial.println("✅ Enviando lista de redes Wi-Fi...");
-        }
-        else if (message == "STTS")
-        {
-            WiFi.begin(ssid, password);
-            Serial.print("Conectando ao WiFi...");
-            if (WiFi.status() != WL_CONNECTED)
-            {
-                pCharacteristic->setValue("CONNECTED");
-                pCharacteristic->notify();
-            }
-            else
-            {
-                pCharacteristic->setValue("DISCONNECTED");
-                pCharacteristic->notify();
-            }
-
-            // Retorna status do wifi
-        }
-        else
-        {
-            if (message.length() < 5 || message.find(";") == std::string::npos)
-                return; // evitar mensagens inválidas
-            size_t delimiter = message.find(";");
-
-            std::string receivedSSID = message.substr(0, delimiter);
-            std::string receivedPass = message.substr(delimiter + 1);
-            Serial.printf("SSID: %s, Password: %s\n", receivedSSID.c_str(), receivedPass.c_str());
-            strncpy(ssid, receivedSSID.c_str(), sizeof(ssid) - 1);
-            strncpy(password, receivedPass.c_str(), sizeof(password) - 1);
-            ssid[sizeof(ssid) - 1] = '\0';
-            password[sizeof(password) - 1] = '\0';
-        }
-    }
-};
-
-// Callbacks
-class ServerCallbacks : public BLEServerCallbacks
-{
-    void onConnect(BLEServer *pServer) override
-    {
-        BLEdeviceConnected = true;
-        Serial.println("✅ Dispositivo conectado!");
-    }
-
-    void onDisconnect(BLEServer *pServer) override
-    {
-        BLEdeviceConnected = false;
-        Serial.println("❌ Dispositivo desconectado!");
-        BLEDevice::startAdvertising();
-    }
-};
-void connectionFlow()
-{
-
-    Serial.println("🚀 Iniciando BLE...");
-
-    BLEDevice::init("Garden Monitor 🌱");
-
-    BLEServer *pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks());
-
-    BLEService *pService = pServer->createService(SERVICE_UUID);
-
-    pCharacteristic = pService->createCharacteristic(
-        CHARACTERISTIC_UUID,
-        BLECharacteristic::PROPERTY_READ |
-            BLECharacteristic::PROPERTY_WRITE |
-            BLECharacteristic::PROPERTY_NOTIFY);
-    pCharacteristic->addDescriptor(new BLE2902());
-
-    pCharacteristic->setCallbacks(new NotificationCallbacks());
-    pService->start();
-
-    // Iniciando o advertising <<<<<<<---------
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
-
-    Serial.println("Bluetooth ativo! aguardando conexão...");
-}
-
 bool tryConnectWiFi()
 {
     WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS);
@@ -203,14 +41,12 @@ bool tryConnectWiFi()
 
     while (attempts < 3)
     {
-
         WiFi.begin(ssid, password);
         Serial.print(".");
         delay(5000);
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("\nWiFi conectado!");
-            //BLEDevice::stopAdvertising();
             return true;
         }
         attempts++;
@@ -249,16 +85,18 @@ void enviarSensorSalinidade()
 
 void enviarDados()
 {
-
-    delay(10000); // espera estabilizar os sensores
+    digitalWrite(Hl69RELAY, HIGH);
+    delay(1000); // aguarda estabilização dos sensores HL-69
     int umidade1 = analogRead(sensor1);
     int umidade2 = analogRead(sensor2);
     int umidade3 = analogRead(sensor3);
     int umidade4 = analogRead(sensor4);
-
+    digitalWrite(Hl69RELAY, LOW);
+    
+    delay(2000); // aguarda estabilização do DHT11
     TempAndHumidity dhtData = dht.getTempAndHumidity();
-
     DHTesp::DHT_ERROR_t status = dht.getStatus();
+
     Serial.print(status);
 
     Serial.printf("🌡️ Temp: %.1f°C  💧 Umid: %.1f%%\n", dhtData.temperature, dhtData.humidity);
@@ -295,13 +133,13 @@ void enviarDados()
             Serial.printf("POST enviado! Código: %d\nResposta: %s\n", httpResponseCode, response.c_str());
             if (response == "true")
             {
-                digitalWrite(RELAY, HIGH);
+                digitalWrite(WaterRELAY, HIGH);
                 Serial.println("Bomba acionada, esperando 30 segundos ...");
                 delay(15000); // TODO: rega dinâmica, input do usuário
                 Serial.println("coletando salinidade ...");
                 enviarSensorSalinidade();
                 delay(15000);
-                digitalWrite(RELAY, LOW);
+                digitalWrite(WaterRELAY, LOW);
                 // return 300000; // 5 minutos para próxima leitura
             }
             else
@@ -327,20 +165,13 @@ void setup()
 {
     Serial.begin(115200);
     dht.setup(DHTPIN, DHTesp::DHT11);
-    pinMode(RELAY, OUTPUT);
-
-    Serial.println("Iniciando fluxo de conexão...");
-    while (!tryConnectWiFi())
-    {
-        connectionFlow();
-    }
-    Serial.print("Conectado com IP: ");
-    Serial.println(WiFi.localIP());
+    pinMode(WaterRELAY, OUTPUT);
+     pinMode(Hl69RELAY, OUTPUT);
 }
 
 void loop()
 {
     enviarDados();
     Serial.println("dados enviados");
-    delay(1800000); //
+    delay(1800000); 
 }
