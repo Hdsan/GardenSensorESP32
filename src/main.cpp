@@ -11,6 +11,7 @@ char password[32] = "phantomcore1052";
 // const char *serverUrl = "http://56.124.43.144:3000/";
 // const char *serverUrl = "http://192.168.100.189:3000/";
 const char *serverUrl = "http://18.230.39.195:3000/";
+const uint64_t SLEEP_TIME = 30ULL * 60ULL * 1000000ULL; 
 
 IPAddress local_IP(192, 168, 100, 253); // IP desejado pro ESP32
 IPAddress gateway(192, 168, 100, 1);    // Gateway (geralmente IP do roteador ou repetidor)
@@ -160,18 +161,46 @@ void enviarDados()
     }
     Serial.println("=== Fim da Leitura ===");
 }
+void teste(){
+      digitalWrite(Hl69RELAY, HIGH);
+    delay(1000); // aguarda estabilização dos sensores HL-69
+    int umidade1 = analogRead(sensor1);
+    int umidade2 = analogRead(sensor2);
+    int umidade3 = analogRead(sensor3);
+    int umidade4 = analogRead(sensor4);
+    digitalWrite(Hl69RELAY, LOW);
+    
+    delay(2000); // aguarda estabilização do DHT11
+    TempAndHumidity dhtData = dht.getTempAndHumidity();
+    DHTesp::DHT_ERROR_t status = dht.getStatus();
+
+    Serial.print(status);
+
+    Serial.printf("🌡️ Temp: %.1f°C  💧 Umid: %.1f%%\n", dhtData.temperature, dhtData.humidity);
+
+    Serial.println("=== Leitura dos Sensores ===");
+    Serial.printf("Umidade Solo 1: %d\n", umidade1);
+    Serial.printf("Umidade Solo 2: %d\n", umidade2);
+    Serial.printf("Umidade Solo 3: %d\n", umidade3);
+    Serial.printf("Umidade Solo 4: %d\n", umidade4);
+    Serial.printf("Temperatura: %.1f °C\n", dhtData.temperature);
+    Serial.printf("Umidade Ar: %.1f %%\n", dhtData.humidity);
+}
+void entrarEmDeepSleep() {
+     Serial.println("Sleep...");
+  esp_sleep_enable_timer_wakeup(SLEEP_TIME);
+  esp_deep_sleep_start();
+}
 
 void setup()
 {
     Serial.begin(115200);
     dht.setup(DHTPIN, DHTesp::DHT11);
     pinMode(WaterRELAY, OUTPUT);
-     pinMode(Hl69RELAY, OUTPUT);
+    pinMode(Hl69RELAY, OUTPUT);
+     enviarDados();
+     entrarEmDeepSleep();
 }
-
-void loop()
-{
-    enviarDados();
-    Serial.println("dados enviados");
-    delay(1800000); 
+void loop(){
+    
 }
