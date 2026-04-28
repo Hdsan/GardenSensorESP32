@@ -4,13 +4,13 @@
 #include "DHTesp.h"
 #include <ArduinoJson.h>
 #include <time.h>
-
+#include "config.h"
 // WIFI
-char ssid[32] = "ssid";
-char password[32] = "password";
-// const char *serverUrl = "http://56.124.43.144:3000/";
-// const char *serverUrl = "http://192.168.100.112:3000/";
-const char *serverUrl = "http://12.123.123.123:3000/";
+
+char ssid[] = WIFI_SSID;
+char password[] = WIFI_PASS;
+
+const char *serverUrl = SERVER_URL;
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -10800;
 const int daylightOffset_sec = 0;
@@ -18,7 +18,7 @@ const int daylightOffset_sec = 0;
 String plantingBedId = "5d30626c-6855-4462-8b8a-f9226b19e70f";
 
 IPAddress local_IP(192, 168, 100, 251); // IP desejado pro ESP32
-IPAddress gateway(192, 168, 100, 1);    // Gateway 
+IPAddress gateway(192, 168, 100, 1);    // Gateway
 IPAddress subnet(255, 255, 255, 0);     // mascara de sub-rede padrão
 IPAddress primaryDNS(8, 8, 8, 8);       // dns opcional
 IPAddress secondaryDNS(8, 8, 4, 4);
@@ -29,6 +29,7 @@ constexpr int S2 = 18;
 constexpr int S3 = 19;
 constexpr int SIG = 32;
 
+constexpr int DHTPIN = 4;
 
 constexpr int WaterRELAY = 5;
 
@@ -36,12 +37,67 @@ WiFiClient client;
 
 DHTesp dht;
 
-void selectChannel(int ch)
+
+int readMedian(int channel)
 {
-    digitalWrite(S0, bitRead(ch, 0));
-    digitalWrite(S1, bitRead(ch, 1));
-    digitalWrite(S2, bitRead(ch, 2));
-    digitalWrite(S3, bitRead(ch, 3));
+    // reduz ruido
+    const int samples = 5;
+    int values[samples];
+
+    for (int i = 0; i < samples; i++)
+    {
+        values[i] = analogRead(channel);
+        delay(100);
+    }
+
+    for (int i = 0; i < samples - 1; i++)
+    {
+        for (int j = i + 1; j < samples; j++)
+        {
+            if (values[j] < values[i])
+            {
+                int temp = values[i];
+                values[i] = values[j];
+                values[j] = temp;
+            }
+        }
+    }
+    Serial.printf("Mediana do canal %d: %d\n", channel, values[2]);
+    return values[2];
+}
+void amostraDeDados()
+{
+
+    HTTPClient http;
+    http.begin(String(serverUrl) + "sample");
+    WiFiClient client;
+    http.addHeader("Content-Type", "application/json");
+
+    dht.getTempAndHumidity(); // descarta primeira leitura pra estabilizar
+    delay(1000);
+    TempAndHumidity dhtData = dht.getTempAndHumidity();
+    DHTesp::DHT_ERROR_t status = dht.getStatus();
+    Serial.print(status);
+
+    Serial.printf("🌡️ Temp: %.1f°C  💧 Umid: %.1f%%\n", dhtData.temperature, dhtData.humidity);
+    Serial.printf("Temperatura: %.1f °C\n", dhtData.temperature);
+    Serial.printf("Umidade Ar: %.1f %%\n", dhtData.humidity);
+    int umidade1 = readMedian(32);
+    int umidade2 = readMedian(33);
+    int umidade3 = readMedian(34);
+    int umidade4 = readMedian(35);
+
+    String jsonData = "{";
+    jsonData += "\"plantingBedId\":\"" + plantingBedId + "\"";
+    jsonData += ",\"sensor1\":" + String(umidade1);
+    jsonData += ",\"sensor2\":" + String(umidade2);
+    jsonData += ",\"sensor3\":" + String(umidade3);
+    jsonData += ",\"sensor4\":" + String(umidade4);
+    jsonData += ",\"air_temperature\":" + String(dhtData.temperature);
+    jsonData += ",\"air_humidity\":" + String(dhtData.humidity);
+    jsonData += "}";
+      int httpResponseCode = http.POST(jsonData);
+
 }
 bool tryConnectWiFi()
 {
@@ -59,6 +115,7 @@ bool tryConnectWiFi()
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("WiFi conectado!");
+            amostraDeDados();
             return true;
         }
         attempts++;
@@ -66,62 +123,11 @@ bool tryConnectWiFi()
     Serial.println("Falha ao conectar ao WiFi");
     return false;
 }
-int readChannel(int ch)
-{
-    selectChannel(ch);
-    delay(1000);
-    analogRead(SIG); // descarta leitura
-    // delay(500);
-    int sig = analogRead(SIG);
-    Serial.printf("Canal %d: %d\n", ch, sig);
-    return sig;
-}
-// void printSensores()
-// {
-//     digitalWrite(MOSFET, HIGH);
-//     delay(2000);
-//     int umidade1 = readChannel(0);
-//     int umidade2 = readChannel(1);
-//     int umidade3 = readChannel(2);
-//     int umidade4 = readChannel(3);
-//     digitalWrite(MOSFET, LOW);
-//     syslog.log("=========================");
-// }
-void enviadrDadosAr()
-{
-    if (tryConnectWiFi())
-    {
-        HTTPClient http;
-        http.begin(String(serverUrl) + "air");
-        http.addHeader("Content-Type", "application/json");
-        dht.getTempAndHumidity(); // discard
-        delay(1000);
-        TempAndHumidity dhtData = dht.getTempAndHumidity();
-        DHTesp::DHT_ERROR_t status = dht.getStatus();
 
-        Serial.printf("🌡️ Temp: %.1f°C  💧 Umid: %.1f%%\n", dhtData.temperature, dhtData.humidity);
-        Serial.printf("Temperatura: %.1f °C\n", dhtData.temperature);
-        Serial.printf("Umidade Ar: %.1f %%\n", dhtData.humidity);
-
-        String jsonData = "{";
-        jsonData += "\"plantingBedId\":\"" + plantingBedId + "\"";
-        jsonData += ",\"airTemperature\":" + String(dhtData.temperature);
-        jsonData += ",\"airHumidity\":" + String(dhtData.humidity);
-        jsonData += "}";
-
-        int httpResponseCode = http.POST(jsonData);
-        Serial.printf("plantingBedId: %s\n", plantingBedId.c_str());
-        if (httpResponseCode == 200)
-        {
-            String response = http.getString();
-            Serial.printf("POST enviado! Código: %d\nResposta: %s\n", httpResponseCode, response.c_str());
-        }
-    }
-}
 void enviarDadosSensores()
 {
 
-    if (tryConnectWiFi())
+    if (WiFi.status() == WL_CONNECTED)
     {
         Serial.printf("WiFi status: %d", WiFi.status());
         HTTPClient http;
@@ -130,16 +136,20 @@ void enviarDadosSensores()
         http.addHeader("Content-Type", "application/json");
 
         // canteiro 1
-        int umidade1 = readChannel(0);
-        int umidade2 = readChannel(1);
-        int umidade3 = readChannel(2);
-        int umidade4 = readChannel(3);
+        int umidade1 = readMedian(32);
+        int umidade2 = readMedian(33);
+        int umidade3 = readMedian(34);
+        int umidade4 = readMedian(35);
 
-        // // canteiro 2
-        // int umidade5 = readChannel(4);
-        // int umidade6 = readChannel(5);
-        // int umidade7 = readChannel(6);
-        // int umidade8 = readChannel(7);
+        dht.getTempAndHumidity(); // descarta primeira leitura pra estabilizar
+        delay(1000);
+        TempAndHumidity dhtData = dht.getTempAndHumidity();
+        DHTesp::DHT_ERROR_t status = dht.getStatus();
+        Serial.print(status);
+
+        Serial.printf("🌡️ Temp: %.1f°C  💧 Umid: %.1f%%\n", dhtData.temperature, dhtData.humidity);
+        Serial.printf("Temperatura: %.1f °C\n", dhtData.temperature);
+        Serial.printf("Umidade Ar: %.1f %%\n", dhtData.humidity);
 
         String jsonData = "{";
         jsonData += "\"plantingBedId\":\"" + plantingBedId + "\"";
@@ -147,6 +157,8 @@ void enviarDadosSensores()
         jsonData += ",\"sensor2\":" + String(umidade2);
         jsonData += ",\"sensor3\":" + String(umidade3);
         jsonData += ",\"sensor4\":" + String(umidade4);
+        jsonData += ",\"air_temperature\":" + String(dhtData.temperature);
+        jsonData += ",\"air_humidity\":" + String(dhtData.humidity);
         jsonData += "}";
 
         int httpResponseCode = http.POST(jsonData);
@@ -185,71 +197,19 @@ void enviarDadosSensores()
         return;
     }
 }
-// void testemultiplexador()
-// {
-//     while (true)
-//     {
-//         syslog.log("Digite o número do canal (0-15): ");
-//         while (Serial.available() == 0)
-//         {
-//         }
-//         int canal = Serial.parseInt();
-
-//         for (int i = 0; i < 5; i++)
-
-//         {
-//             int valor = readChannel(canal);
-
-//             syslog.log("Canal %d: %d\n", canal, valor);
-//             delay(300);
-//         }
-//     }
-// }
-// void testarmultiplexador2()
-// {
-//     for (int ch = 0; ch < 4; ch++)
-//     {
-//         int valor = readChannel(ch);
-//         delay(1000);
-//         syslog.log("Canal %d: %d\n", ch, valor);
-//     }
-// }
-
-// void verificarSensores()
-// {
-//     time_t now = time(nullptr);
-//     struct tm *timeinfo = localtime(&now);
-
-//     if (timeinfo->tm_hour == 9)
-//     {
-//        int irrigacao = enviarDadosSensores();
-//     }
-//     else if (timeinfo->tm_hour == 18)
-//     {
-//         enviarDadosSensores();
-//     }
-
-//     digitalWrite(MOSFET, HIGH);
-//     delay(2000);
-//     for (int ch = 0; ch < 16; ch++)
-//     {
-//         int valor = readChannel(ch);
-//         syslog.log("Canal %d: %d\n", ch, valor);
-//     }
-//     digitalWrite(MOSFET, LOW);
-// }
 
 void setup()
 {
     Serial.begin(115200);
-    pinMode(S0, OUTPUT);
-    pinMode(S1, OUTPUT);
-    pinMode(S2, OUTPUT);
-    pinMode(S3, OUTPUT);
+    pinMode(32, INPUT);
+    pinMode(33, INPUT);
+    pinMode(34, INPUT);
+    pinMode(35, INPUT);
+    
     pinMode(WaterRELAY, OUTPUT);
+    Serial.begin(115200);
+    dht.setup(DHTPIN, DHTesp::DHT11);
 
-    analogReadResolution(12);
-    analogSetPinAttenuation(SIG, ADC_11db);
     if (tryConnectWiFi())
     {
         delay(2000);
@@ -257,15 +217,17 @@ void setup()
 
         struct tm timeinfo;
         bool time = false;
-        while(!time){
+        while (!time)
+        {
             if (!getLocalTime(&timeinfo))
             {
                 Serial.printf("Falha ao obter o tempo, tentando novamente...\n");
                 delay(2000);
-                return;
             }
-            time = true;
-            
+            else
+            {
+                time = true;
+            }
         }
 
         int h = timeinfo.tm_hour;
@@ -278,7 +240,6 @@ void setup()
         if (proximaHora >= 24)
             proximaHora = 0;
 
-       
         long agora = h * 3600 + m * 60 + s;
         long alvo = proximaHora * 3600;
 
